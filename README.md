@@ -2,7 +2,9 @@
 
 ## Скачать сборку с тестовыми делами
 
-Комплект дел **777** и **TEST-C1** опубликован отдельно от исходников:
+Комплект дел **777** и **TEST-C1** включён в эту ветку репозитория, в папку [examples/test-cases](examples/test-cases). При первом `npm start` в новой установке он автоматически копируется в локальное хранилище. Существующая база не заменяется; при заданном `VESTIGO_DATA_DIR` автоматический перенос отключён. При скачивании через **Code → Download ZIP** дела включены.
+
+Также доступны готовые сборки:
 
 - [Windows — порт 3200](https://github.com/kabildinaa13-cmd/Vestigo/releases/download/v0.1.0-test-cases-2026-11-11/Vestigo-Windows-3200-777-TEST-C1-2026-11-11.zip)
 - [Mac — порт 3200](https://github.com/kabildinaa13-cmd/Vestigo/releases/download/v0.1.0-test-cases-2026-11-11/Vestigo-Mac-3200-777-TEST-C1-2026-11-11.zip)
