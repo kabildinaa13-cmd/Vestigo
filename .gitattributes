@@ -1,0 +1,3 @@
+# Originals and SQLite snapshots must keep their exact bytes on every OS.
+*.original -text
+*.sqlite -text
