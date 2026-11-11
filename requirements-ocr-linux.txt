@@ -1,0 +1,3 @@
+-r requirements.txt
+# Requires distribution-provided Tesseract/Leptonica development libraries.
+tesserocr==2.10.0

@@ -1,0 +1,8 @@
+.analytics-nav-link {
+  display: block; padding: 14px; margin-top: 4px; border: 1px solid var(--ui-accent-border);
+  border-radius: 9px; color: var(--ui-muted); background: var(--ui-accent-soft);
+  font-size: 16px; line-height: 1.5; font-weight: 600; text-decoration: none;
+}
+.analytics-nav-link:hover { background: var(--ui-accent); }
+.document-analyze { margin-top: 14px; }
+.analytics-nav-link:focus-visible { outline: 3px solid var(--ui-border); outline-offset: 3px; }

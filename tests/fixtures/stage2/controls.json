@@ -1,0 +1,23 @@
+{
+  "A": "990000000021",
+  "B": "020000000022",
+  "C": "990000000023",
+  "IBAN": "KZ86125KZT5004100100",
+  "esf": {
+    "invoices": 4,
+    "rows": 5,
+    "totalMinor": "45000"
+  },
+  "bank": {
+    "transfers": 4,
+    "outgoingMinor": "14000",
+    "incomingMinor": "9000",
+    "feesMinor": "150"
+  },
+  "manual": {
+    "amountMinor": 7700
+  },
+  "formula": {
+    "cachedMinor": 3000
+  }
+}

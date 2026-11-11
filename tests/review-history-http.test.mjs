@@ -1,0 +1,42 @@
+import test from "node:test";import assert from "node:assert/strict";import fs from "node:fs";import os from "node:os";import path from "node:path";import {spawn,spawnSync} from "node:child_process";
+import {createAuthenticatedFetch,TEST_SETUP_TOKEN} from "./authenticated-fetch.mjs";
+import {openDatabase} from "../app/lib/vestigo-db.mjs";
+const fetch=createAuthenticatedFetch(),A="990000000001",B="020000000002";
+test("history HTTP: genuine authenticated handlers, manual state transitions, immutable audit, filters, no technical leakage and system-log denial",{timeout:150000},async()=>{
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),"vestigo-review-history-http-")),env={...process.env,VESTIGO_DATA_DIR:directory,VESTIGO_SETUP_TOKEN:TEST_SETUP_TOKEN,VESTIGO_SITE_PORT:"3292"},children=[];let logs="";const base="http://localhost:3292";
+ const start=args=>{const p=spawn(process.execPath,args,{cwd:process.cwd(),env,windowsHide:true,stdio:["ignore","pipe","pipe"]});for(const stream of [p.stdout,p.stderr])stream.on("data",v=>logs=(logs+v).slice(-7000));children.push(p);return p;};
+ const get=async route=>{const r=await fetch(base+route),p=await r.json();assert.ok(r.ok,JSON.stringify(p));return p;};
+ const post=async(route,body)=>{const r=await fetch(base+route,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),p=await r.json();assert.ok(r.ok,JSON.stringify(p));return p;};
+ try{
+  const server=start(["node_modules/vinext/dist/cli.js","dev","--port","3292"]);let ready=false;for(let i=0;i<80;i++){if(server.exitCode!==null)throw Error(logs);try{if((await globalThis.fetch(base+"/api/auth/session",{signal:AbortSignal.timeout(1000)})).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,250));}assert.ok(ready,logs);
+  assert.equal((await globalThis.fetch(base+"/api/system-log")).status,401);
+  const caseId=(await post("/api/cases",{caseNumber:"REVIEW-HISTORY-HTTP"})).case.id,other=(await post("/api/cases",{caseNumber:"ISOLATED"})).case.id;
+  const upload=async(name,bytes)=>{const form=new FormData();for(const [k,v]of Object.entries({caseId,groupId:"unclassified",typeId:"unclassified",classificationMode:"auto",processInBackground:"true"}))form.set(k,v);form.set("file",new Blob([bytes]),name);const r=await fetch(base+"/api/documents",{method:"POST",body:form}),p=await r.json();assert.ok(r.ok,JSON.stringify(p));return p;};
+  const invoice=await upload("Приобретение history.xlsx",fs.readFileSync("tests/fixtures/esf-89/purchase.xlsx"));
+  const bank=await upload("bank.csv",Buffer.from(`Дата;БИН владельца счета;БИН контрагента;Наименование контрагента;Дебет;Кредит;Номер документа;Назначение платежа;Валюта\n02.10.2026;${A};${B};ТОО Синтетический поставщик;60,00;0;PAY-HISTORY;Оплата SYN-P1;KZT`));start(["scripts/processing-worker.mjs"]);
+  let jobs;for(let i=0;i<180;i++){jobs=await get(`/api/processing-jobs?caseId=${caseId}`);if((jobs.counts.completed||0)+(jobs.counts.failed||0)===2)break;await new Promise(r=>setTimeout(r,250));}assert.equal(jobs.counts.completed,2,JSON.stringify(jobs)+logs);
+  const history=extra=>get(`/api/analysis-center?caseId=${caseId}&view=history${extra||""}`);let h=await history();assert.equal(h.total,0);assert.equal(h.stats.reviewed,0);assert.equal(h.emptyMessage,"Сотрудники пока не принимали решений по результатам анализа");
+  let db=openDatabase({dataDirectory:directory}),oldRows;try{oldRows=db.prepare("SELECT * FROM audit_log ORDER BY rowid").all();assert.ok(oldRows.some(r=>r.action==="case.processing_completed"));}finally{db.close();}
+  const risks=await get(`/api/analysis-center?caseId=${caseId}&view=discrepancies`),risk=risks.items.find(r=>r.code==="PAYMENT_AMOUNT_DIFFERENCE");assert.ok(risk);
+  const riskDecision=(status,note)=>post("/api/analysis-center",{caseId,action:"risk",id:risk.id,fingerprint:risk.fingerprint,status,note,userId:"forged-user",role:"administrator"});
+  await riskDecision("confirmed","Проверено по документам");await riskDecision("rejected","Ошибочный период сопоставления");await riskDecision("rejected","Обоснование дополнено сведениями о периоде");
+  h=await history();assert.equal(h.total,3);assert.equal(h.stats.reviewed,1);assert.equal(h.stats.rejections,1);assert.equal(h.items[0].kind,"comment_added");assert.equal(h.items[0].employee.name,"Synthetic tester");assert.equal(h.items[0].employee.login,"synthetic-tester");assert.equal(h.items[0].previousNote,"Ошибочный период сопоставления");assert.ok(h.items[1].changed);assert.equal(h.items[1].previousState,"Подтверждено сотрудником");
+  assert.equal(new Set(h.items[0].documents.map(d=>d.name)).size,2);assert.ok(h.items[0].documents.some(d=>d.name.includes("Приобретение")&&d.location.includes("строка 2")));assert.ok(h.items[0].documents.some(d=>d.name==="bank.csv"));assert.ok(h.items[0].parties.some(p=>p.identifier===A));
+  for(const entry of h.items){assert.equal(entry.details,undefined);assert.equal(entry.action,undefined);assert.equal(entry.userId,undefined);assert.equal(entry.jobId,undefined);}
+  assert.doesNotMatch(JSON.stringify(h),/case\.processing_completed|case\.document_extracted|local-system-user|forged-user/);
+  const review=await get(`/api/analysis-center?caseId=${caseId}&view=review&riskId=${risk.id}`),i=review.matchCandidates.find(o=>o.number==="SYN-P1"),p=review.matchCandidates.find(o=>o.type==="payment");
+  const matchDecision=(status,note)=>post("/api/analysis-center",{caseId,action:"match",leftId:i.id,rightId:p.id,leftFingerprint:i.fingerprint,rightFingerprint:p.fingerprint,status,note});
+  await matchDecision("confirmed","Подтверждено соответствие ЭСФ и платежа");await matchDecision("rejected","Ошибочно выбранная связь отклонена");await riskDecision("checking","Материалы проверяются повторно");
+  h=await history();assert.equal(h.total,6);assert.equal(h.stats.reviewed,2);assert.equal(h.stats.rejections,1);assert.equal(h.stats.unfinished,1);assert.equal(h.stats.confirmations,0);
+  assert.equal((await history("&kind=match_rejected")).total,1);assert.equal((await history("&kind=comment_added")).total,1);assert.equal((await history("&status=confirmed")).total,2);assert.equal((await history("&employee=synthetic-tester&counterparty="+A)).total,6);assert.equal((await history("&counterparty=NOT_FOUND")).total,0);
+  const day=h.items[0].createdAt.slice(0,10);assert.equal((await history(`&from=${day}&to=${day}&timeZone=UTC`)).total,6);assert.equal((await history("&from=2020-01-01&to=2020-01-02")).total,0);assert.equal((await history("&limit=2&offset=2")).items.length,2);
+  assert.equal((await fetch(base+`/api/analysis-center?caseId=${caseId}&view=history&from=wrong-date`)).status,400);
+  assert.equal((await get(`/api/analysis-center?caseId=${other}&view=history`)).total,0);assert.equal((await fetch(base+"/api/analysis-center?caseId=missing&view=history")).status,404);
+  db=openDatabase({dataDirectory:directory});try{for(const old of oldRows)assert.deepEqual(db.prepare("SELECT * FROM audit_log WHERE id=?").get(old.id),old);db.prepare("UPDATE users SET role='administrator' WHERE login='synthetic-tester'").run();}finally{db.close();}
+  assert.equal((await fetch(base+"/api/system-log?role=administrator&admin=1")).status,403);assert.equal((await fetch(base+`/api/analysis-center?caseId=${caseId}&view=system_log&role=administrator`)).status,403);
+  const forbidden=await fetch(base+"/api/analysis-center",{method:"POST",headers:{"content-type":"application/json",origin:"https://untrusted.invalid"},body:JSON.stringify({caseId,action:"risk"})});assert.equal(forbidden.status,403);
+  const source=await fetch(base+h.items[0].documents[0].originalUrl);assert.equal(source.status,200);
+  const beforeSources=h.items[0].documents;await post("/api/case-analysis",{caseId,id:invoice.id,kind:"document",status:"excluded",note:"Synthetic source exclusion"});h=await history();assert.equal(h.total,6);assert.deepEqual(h.items[0].documents,beforeSources);
+  console.log("REVIEW HISTORY HTTP verified: automatic events excluded; 6 human events / 2 unique questions; before/after snapshots, comments, sources, filters, immutable audit, real session identity, 401/403 checks.");
+ }finally{for(const p of children.reverse())if(p.exitCode===null){if(process.platform==="win32")spawnSync("taskkill",["/PID",String(p.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});else p.kill();}await new Promise(r=>setTimeout(r,800));fs.rmSync(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -1,0 +1,23 @@
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tsbuildinfo
+.next/
+dist/
+.wrangler/
+# Local cases, originals, credentials, setup codes, reports and diagnostics.
+/data/
+# Generated analytical snapshots can contain case information.
+/app/data/
+# Bundled external build dependencies are installed separately.
+/vendor/artifact-tool/
+.env*
+*.log
+*.sqlite*
+*.db
+*.zip
+*.pem
+*.key
+.DS_Store

@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+import React from 'react';
+import * as jsxRuntime from 'react/jsx-runtime';
+import {renderToStaticMarkup} from 'react-dom/server';
+import * as notices from '../app/lib/document-notice-groups.mjs';
+const exports={};
+const code=ts.transpileModule(fs.readFileSync('app/components/reports-panel.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
+vm.runInNewContext(code,{exports,require:id=>id==='react'?React:id==='react/jsx-runtime'?jsxRuntime:id.includes('calculations-panel')?{formatMinor:(value,currency)=>value==null?'Не установлено':value+' '+currency}:id==='./document-notice-groups'?()=>null:notices});
+test('report overview explains missing loss; keeps document states and original warnings in collapsed details',()=>{
+ const preview={case:{caseNumber:'TEST'},version:1,warning:'Длинный комментарий',workflow:{participants:[],episodes:[],balances:[],losses:[],warning:'Ограничение методики'},documents:[{id:'d',name:'act.txt',status:'review',rows:0}],operations:[],matches:[],missingMaterials:[{category:'processing',documentId:'d'}],risks:[{id:'r',code:'CONFLICTING_DOCUMENT',status:'detected',description:'Документ «V2»',rule:'частичный итог',evidence:[{documentId:'d',name:'act.txt'}]}]};
+ const before=JSON.stringify(preview),html=renderToStaticMarkup(React.createElement(exports.ReportPreview,{preview,caseId:'c'}));
+ assert.equal(JSON.stringify(preview),before);
+ assert.match(html,/Сумма ущерба не рассчитана/);assert.match(html,/Зарегистрируйте потерпевшего/);
+ assert.match(html,/V2: сумма не установлена/);
+ assert.match(html,/<details><summary>Документы \(1\)<\/summary>.*Проверить реквизиты/);
+ assert.match(html,/<details><summary>Методики, версии и ограничения<\/summary><p>Длинный комментарий<\/p>/);
+ assert.doesNotMatch(html,/> · review|строк: 0|<details open/);
+});
+test('saved examples show original amounts and locations directly in the summary',()=>{
+ const examples=[{documentId:'d',name:'lines.csv',sheet:'Таблица',row:5,values:[{label:'Сумма строки',raw:'20,01'}]},{documentId:'d',name:'lines.csv',sheet:'Таблица',row:6,values:[{label:'Сумма строки',raw:'20,02'}]}];
+ const preview={case:{caseNumber:'TEST'},version:2,findingEvidenceVersion:1,documents:[{id:'d',name:'lines.csv',status:'review',rows:2}],risks:[{id:'r',code:'CONFLICTING_DOCUMENT',status:'detected',description:'Документ «V2»',evidence:examples,reportEvidence:{reason:'Один номер позиции указан с разными суммами.',examples}}]};
+ const html=renderToStaticMarkup(React.createElement(exports.ReportPreview,{preview,caseId:'c'}));
+ const summary=html.split('<details>')[0];
+ for(const value of ['строка 5','20,01','строка 6','20,02','Один номер позиции','/api/documents/d'])assert.ok(summary.includes(value),value);
+ assert.doesNotMatch(html,/сформируйте новую версию/);
+});

@@ -1,0 +1,2 @@
+# Development-only writer for synthetic legacy XLS fixtures. Not needed to read user documents.
+xlwt==1.3.0

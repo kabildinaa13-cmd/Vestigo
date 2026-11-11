@@ -1,0 +1,10 @@
+"use client";
+import {FormEvent,useState} from "react";
+export default function ManualDocumentFacts({caseId,documentId,onUpdated}:{caseId:string;documentId:string;onUpdated:()=>Promise<void>}){
+  const [busy,setBusy]=useState(false),[error,setError]=useState("");
+  async function save(e:FormEvent<HTMLFormElement>){e.preventDefault();setBusy(true);setError("");const data=new FormData(e.currentTarget),documentFields=Object.fromEntries([...data.entries()].filter(([k])=>k!=="confirmed").map(([k,v])=>[k,String(v)]));try{const response=await fetch(`/api/documents/${documentId}/analyze`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({caseId,documentFields,manualConfirmed:data.get("confirmed")==="on"})});const payload=await response.json();if(!response.ok)throw new Error(payload.error);await onUpdated();}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сохранить");}finally{setBusy(false);}}
+  return <details><summary>Ввести проверенные реквизиты текстового документа</summary><p>Введённые сведения будут помечены как ввод специалиста, а не автоматическое распознавание. Оригинал не изменяется.</p><form className="form-grid" onSubmit={save}>
+    {[['senderId','БИН/ИИН стороны 1'],['senderName','Наименование стороны 1'],['recipientId','БИН/ИИН стороны 2'],['recipientName','Наименование стороны 2'],['number','Номер документа'],['contractRef','Договор-основание'],['date','Дата документа'],['amount','Сумма документа'],['currency','Валюта, например KZT'],['purpose','Предмет / назначение']].map(([name,label])=><label key={name}>{label}<input name={name} type={name==="date"?"date":"text"} maxLength={2000} required={["senderId","recipientId","date","amount","currency"].includes(name)}/></label>)}
+    <label className="full"><span><input name="confirmed" type="checkbox" required/> Я сверил(а) реквизиты с оригиналом. Это не подтверждение фактического исполнения.</span></label>{error&&<p className="notice error full">{error}</p>}<button disabled={busy} className="primary">{busy?"Сохраняем…":"Сохранить реквизиты и пересчитать дело"}</button>
+  </form></details>;
+}

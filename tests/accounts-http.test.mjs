@@ -1,0 +1,34 @@
+import test from "node:test";import assert from "node:assert/strict";
+import fs from "node:fs";import os from "node:os";import path from "node:path";import {spawn,spawnSync} from "node:child_process";import {once} from "node:events";
+import {openDatabase} from "../app/lib/vestigo-db.mjs";
+test("real sign-in protects pages, every private API, original files, graph and service proxy; equal accounts share data and keep separate authors",{timeout:90000},async()=>{
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),"vestigo-auth-http-")),base="http://localhost:3296",code="synthetic-http-account-bootstrap-code",password="Synthetic password 2026!";let logs="";
+ const child=spawn(process.execPath,["scripts/vestigo-run.mjs"],{cwd:process.cwd(),windowsHide:true,env:{...process.env,VESTIGO_DATA_DIR:directory,VESTIGO_ANALYTICS_ROOT:directory,VESTIGO_SITE_PORT:"3296",VESTIGO_SERVICE_PORT:"4496",VESTIGO_SETUP_TOKEN:code},stdio:["ignore","pipe","pipe"]});child.stdout.on("data",v=>logs=(logs+v).slice(-6000));child.stderr.on("data",v=>logs=(logs+v).slice(-6000));
+ const request=(route,method="GET",body,cookie,extra={})=>fetch(base+route,{method,redirect:"manual",headers:{...(body?{"content-type":"application/json"}:{}),...(cookie?{cookie}:{}),...extra},...(body?{body:JSON.stringify(body)}:{})});
+ try{
+  let ready=false;for(let i=0;i<60;i++){if(child.exitCode!==null)throw Error(logs);try{if((await request("/api/auth/session")).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,250));}assert.ok(ready,logs);
+  const initial=await(await request("/api/auth/session")).json();assert.equal(initial.setupRequired,true);assert.equal(initial.user,null);assert.ok(!JSON.stringify(initial).includes(code));
+  for(const route of ["/api/dashboard","/api/cases","/api/documents?caseId=missing","/api/documents/fake?caseId=missing","/api/documents/fake/analyze","/api/case-analysis","/api/case-workspace","/api/processing-jobs","/api/calculations","/api/reports","/api/bank-analysis","/api/flow","/api/entities","/api/risks","/api/chains","/api/deals","/api/financials","/api/imports","/api/sources","/api/leaders","/api/episodes","/api/open-records","/api/auth/accounts","/local-service/health","/local-service/export"]){const r=await request(route);assert.equal(r.status,401,route+": "+await r.text());}
+  for(const [route,method] of [["/api/cases","POST"],["/api/documents","POST"],["/api/cases","PATCH"],["/api/documents/fake","DELETE"]])assert.equal((await request(route,method,{})).status,401,route);
+  for(const route of ["/","/analytics","/accounts"]){const r=await request(route);assert.equal(r.status,303,route);assert.ok(r.headers.get("location").includes("/login"));assert.ok(!(await r.text()).includes("SHARED-SECRET-CASE"));}
+  assert.equal((await request("/data/first-account-code.txt?raw")).status,403);
+  assert.equal((await request("/api/auth/setup","POST",{login:"alice",password,setupCode:"wrong"})).status,403);
+  assert.equal((await request("/api/auth/setup","POST",{login:"alice",password,setupCode:code},undefined,{origin:"https://other.example"})).status,403);
+  const first=await request("/api/auth/setup","POST",{login:"alice",password,setupCode:code,displayName:"Алиса"});assert.equal(first.status,201,await first.clone().text());const cookieA=first.headers.get("set-cookie").split(";")[0],alice=(await first.json()).user;assert.deepEqual(Object.keys(alice).sort(),["displayName","id","login"]);assert.match(first.headers.get("set-cookie"),/HttpOnly/);assert.match(first.headers.get("set-cookie"),/SameSite=Strict/);
+  assert.equal((await request("/api/auth/setup","POST",{login:"other",password,setupCode:code})).status,409);
+  assert.equal((await request("/api/auth/login","POST",{login:"alice",password:"wrong"})).status,401);
+  const added=await request("/api/auth/accounts","POST",{login:"bob",password,displayName:"Боб",currentPassword:password},cookieA);assert.equal(added.status,201,await added.clone().text());const bob=(await added.json()).account;
+  const logged=await request("/api/auth/login","POST",{login:"bob",password});assert.equal(logged.status,200);const cookieB=logged.headers.get("set-cookie").split(";")[0];assert.notEqual(cookieA,cookieB);
+  const created=await request("/api/cases","POST",{caseNumber:"SHARED-SECRET-CASE"},cookieA);assert.equal(created.status,201,await created.clone().text());const caseId=(await created.json()).case.id;
+  const shared=await(await request("/api/cases","GET",undefined,cookieB)).json();assert.ok(shared.cases.some(c=>c.id===caseId));
+  const form=new FormData();form.set("caseId",caseId);form.set("groupId","correspondence");form.set("typeId","cover_letter");form.set("file",new Blob(["SYNTHETIC PRIVATE ORIGINAL"]),"synthetic.txt");const upload=await fetch(base+"/api/documents",{method:"POST",headers:{cookie:cookieB},body:form});assert.equal(upload.status,201,await upload.clone().text());const document=(await upload.json()).id;
+  assert.equal((await request(`/api/documents/${document}?caseId=${caseId}`)).status,401);assert.equal(await(await request(`/api/documents/${document}?caseId=${caseId}`,"GET",undefined,cookieA)).text(),"SYNTHETIC PRIVATE ORIGINAL");
+  const db=openDatabase({dataDirectory:directory});try{assert.equal(db.prepare("SELECT responsible_user_id FROM cases WHERE id=?").get(caseId).responsible_user_id,alice.id);assert.equal(db.prepare("SELECT created_by FROM documents WHERE id=?").get(document).created_by,bob.id);assert.equal(db.prepare("SELECT count(*) n FROM account_credentials").get().n,2);}finally{db.close();}
+  assert.equal((await request("/api/dashboard","GET",undefined,cookieA+"x")).status,401);
+  assert.equal((await request("/api/dashboard","GET",undefined,undefined,{"x-middleware-subrequest":"proxy:proxy:proxy:proxy:proxy","x-vestigo-user":"alice"})).status,401);
+  assert.equal((await request("/analytics","GET",undefined,undefined,{"x-middleware-subrequest":"proxy:proxy:proxy:proxy:proxy"})).status,303);
+  assert.equal((await request("/api/auth/password","POST",{currentPassword:password,password:password+" changed"},cookieA)).status,200);assert.equal((await request("/api/dashboard","GET",undefined,cookieA)).status,401);assert.equal((await request("/api/dashboard","GET",undefined,cookieB)).status,200);
+  assert.equal((await request("/api/auth/logout","POST",undefined,cookieB)).status,200);assert.equal((await request("/api/dashboard","GET",undefined,cookieB)).status,401);
+  assert.ok(!logs.includes(password));assert.ok(!logs.includes("SYNTHETIC PRIVATE ORIGINAL"));
+ }finally{if(child.exitCode===null){const done=once(child,"exit");if(process.platform==="win32")spawnSync("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});else child.kill();await Promise.race([done,new Promise(r=>setTimeout(r,1500))]);}fs.rmSync(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -1,0 +1,16 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {spawn,spawnSync} from 'node:child_process';
+import {createAuthenticatedFetch,TEST_SETUP_TOKEN} from './authenticated-fetch.mjs';
+test('analytics SSR boundary: authenticated case/legacy/currency/case transitions and unavailable case stay distinct',{timeout:120000},async()=>{
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'vestigo-hydration-http-')),base='http://localhost:3497',env={...process.env,VESTIGO_DATA_DIR:directory,VESTIGO_ANALYTICS_ROOT:directory,VESTIGO_SETUP_TOKEN:TEST_SETUP_TOKEN,VESTIGO_SITE_PORT:'3497'},request=createAuthenticatedFetch();let logs='';const child=spawn(process.execPath,['node_modules/vinext/dist/cli.js','dev','--port','3497'],{cwd:process.cwd(),env,windowsHide:true,stdio:['ignore','pipe','pipe']});for(const s of [child.stdout,child.stderr])s.on('data',b=>logs=(logs+b).slice(-6000));
+ try{
+  let ready=false;for(let n=0;n<100;n++){try{if((await fetch(base+'/api/auth/session',{signal:AbortSignal.timeout(1000)})).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,200));}assert.ok(ready,logs);
+  const create=async number=>{const r=await request(base+'/api/cases',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({caseNumber:number})});assert.equal(r.status,201);return (await r.json()).case.id;};
+  const a=await create('SYNTHETIC-HYDRATION-A'),b=await create('SYNTHETIC-HYDRATION-B');const nav=html=>html.match(/<nav aria-label="Разделы Vestigo">([\s\S]*?)<\/nav>/)?.[1]||'';
+  for(const [id,number,currency]of [[a,'SYNTHETIC-HYDRATION-A','KZT'],[a,'SYNTHETIC-HYDRATION-A','EUR'],[b,'SYNTHETIC-HYDRATION-B','USD'],[a,'SYNTHETIC-HYDRATION-A','KZT']]){
+   const r=await request(`${base}/analytics?caseId=${id}&currency=${currency}`),html=await r.text();assert.equal(r.status,200,html.slice(0,300));assert.ok(nav(html));assert.doesNotMatch(nav(html),/aria-label="Источники"|aria-label="Загрузки"/);assert.match(nav(html),/aria-label="Обзор"/);assert.ok(html.replace(/<!--[\s\S]*?-->/g,'').includes('Дело '+number),'Expected selected synthetic case');assert.match(html,/Документы выбранного дела/);assert.match(html,new RegExp('value="'+currency+'" selected=""'));assert.ok(/analytics-workspace\.tsx/.test(html),'Expected workspace client reference');
+  }
+  const legacy=await(await request(base+'/analytics?scope=legacy')).text();assert.match(nav(legacy),/aria-label="Источники"/);assert.match(nav(legacy),/aria-label="Загрузки"/);assert.doesNotMatch(legacy,/class="case-scope-banner"/);
+  const denied=await(await request(base+'/analytics?caseId=not-an-accessible-case')).text();assert.match(denied,/Указанное дело недоступно/);assert.equal(nav(denied),'');assert.equal((await fetch(`${base}/analytics?caseId=${a}`,{redirect:'manual'})).status,303);
+  console.log('HYDRATION_SSR_HTTP: case menu always 4 sections, archive 6; currency and case snapshots serializable; client boundary present; unavailable case never falls back to archive; auth retained.');
+ }finally{if(child.exitCode===null)spawnSync('taskkill',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});await new Promise(r=>setTimeout(r,400));fs.rmSync(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
